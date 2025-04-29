@@ -10,6 +10,7 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+// 计时器，用于记录函数耗时
 class PerfStepTimer {
  public:
   explicit PerfStepTimer(
@@ -22,6 +23,7 @@ class PerfStepTimer {
                  ? ((env != nullptr) ? env : Env::Default())
                  : nullptr),
         start_(0),
+        // 指针用于保存时间差（ns）
         metric_(metric),
         statistics_(statistics),
         ticker_type_(ticker_type) {}
@@ -47,6 +49,7 @@ class PerfStepTimer {
   void Measure() {
     if (start_) {
       uint64_t now = time_now();
+      // 从开始到当前的ns耗时，通过指针返回
       *metric_ += now - start_;
       start_ = now;
     }

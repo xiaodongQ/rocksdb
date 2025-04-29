@@ -31,6 +31,7 @@ WriteThread::WriteThread(const ImmutableDBOptions& db_options)
       stall_mu_(),
       stall_cv_(&stall_mu_) {}
 
+// 阻塞等待
 uint8_t WriteThread::BlockingAwaitState(Writer* w, uint8_t goal_mask) {
   // We're going to block.  Lazily create the mutex.  We guarantee
   // propagation of this construction to the waker via the
@@ -76,6 +77,7 @@ uint8_t WriteThread::AwaitState(Writer* w, uint8_t goal_mask,
     if ((state & goal_mask) != 0) {
       return state;
     }
+    // pause等待
     port::AsmVolatilePause();
   }
 
@@ -221,25 +223,32 @@ void WriteThread::SetState(Writer* w, uint8_t new_state) {
 }
 
 bool WriteThread::LinkOne(Writer* w, std::atomic<Writer*>* newest_writer) {
+  // 注意这里传入的newest_writer是atomic指针（`atomic<>*`），指针指向的又是一个`Writer*`
   assert(newest_writer != nullptr);
   assert(w->state == STATE_INIT);
+  // 无锁访问，传入的读取处理类数据
   Writer* writers = newest_writer->load(std::memory_order_relaxed);
   while (true) {
     // If write stall in effect, and w->no_slowdown is not true,
     // block here until stall is cleared. If its true, then return
     // immediately
+    // 如果 newest_writer 当前指向的Writer任务是允许停顿的Writer，则等任务执行完
     if (writers == &write_stall_dummy_) {
+      // 选项指定了不允许停顿，则返回
       if (w->no_slowdown) {
         w->status = Status::Incomplete("Write stall");
+        // 此处涉及状态机流转，直接设置为 `STATE_COMPLETED`
         SetState(w, STATE_COMPLETED);
         return false;
       }
       // Since no_slowdown is false, wait here to be notified of the write
       // stall clearing
       {
+        // 该锁和条件变量用于 write_stall_dummy_，停顿写处理类
         MutexLock lock(&stall_mu_);
         writers = newest_writer->load(std::memory_order_relaxed);
         if (writers == &write_stall_dummy_) {
+          // 条件变量进行等待
           stall_cv_.Wait();
           // Load newest_writers_ again since it may have changed
           writers = newest_writer->load(std::memory_order_relaxed);
@@ -247,8 +256,12 @@ bool WriteThread::LinkOne(Writer* w, std::atomic<Writer*>* newest_writer) {
         }
       }
     }
+    // 原来的Writer先备份到link_older
     w->link_older = writers;
+    // CAS操作，参数：(expected, desired, order = std::memory_order_seq_cst)，和expected比较，相同则更新为desired，不同则当前值存到expected。
+    // 此处weak CAS配合while处理，最终newest_writer指向传入的 w
     if (newest_writer->compare_exchange_weak(writers, w)) {
+      // 此处说明原来 writers 就为nullptr，CAS结束后并不会自动将其置null
       return (writers == nullptr);
     }
   }
@@ -376,12 +389,16 @@ void WriteThread::EndWriteStall() {
 }
 
 static WriteThread::AdaptationContext jbg_ctx("JoinBatchGroup");
+// 将w加入到批量处理线程中
 void WriteThread::JoinBatchGroup(Writer* w) {
   TEST_SYNC_POINT_CALLBACK("WriteThread::JoinBatchGroup:Start", w);
   assert(w->batch != nullptr);
 
+  // 把newest_writer_指向当前要加入的w，newest_writer_是一个`Writer*`的原子变量，其中指针指向最新的 `Writer` 实例
+  // 其中基于原子变量进行lock-free操作，避免锁竞争
   bool linked_as_leader = LinkOne(w, &newest_writer_);
 
+  // 如果原来 newest_writer_ 指向为 nullptr，则此次w设置为 `STATE_GROUP_LEADER` 状态
   if (linked_as_leader) {
     SetState(w, STATE_GROUP_LEADER);
   }
@@ -403,6 +420,10 @@ void WriteThread::JoinBatchGroup(Writer* w) {
      *      writes in parallel.
      */
     TEST_SYNC_POINT_CALLBACK("WriteThread::JoinBatchGroup:BeganWaiting", w);
+    // 等待直到满足下述任一条件
+    // 1、已有leader结束并将当前w选为新leader
+    // 2、已有leader将当前w选为follewer，且 ( 已结束MemTable写 || 结束并发MemTable写 )
+    // 3、串行写时，已有leader将当前w选为follower，且结束了WAL写、且 ( 当前w成为MemTable Writer组的leader || 结束了并发memtable写 )
     AwaitState(w, STATE_GROUP_LEADER | STATE_MEMTABLE_WRITER_LEADER |
                       STATE_PARALLEL_MEMTABLE_WRITER | STATE_COMPLETED,
                &jbg_ctx);

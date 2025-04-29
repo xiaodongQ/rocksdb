@@ -284,13 +284,16 @@ inline bool GetFixed16(Slice* input, uint16_t* value) {
   return true;
 }
 
+// 从input读取数据，并更新其中新的数据指针位置 以及 剩余数据大小
 inline bool GetVarint32(Slice* input, uint32_t* value) {
   const char* p = input->data();
   const char* limit = p + input->size();
+  // 读取数据并返回读走数据后的指针q
   const char* q = GetVarint32Ptr(p, limit, value);
   if (q == nullptr) {
     return false;
   } else {
+    // 返回新的数据指针位置 以及 剩余数据大小
     *input = Slice(q, static_cast<size_t>(limit - q));
     return true;
   }

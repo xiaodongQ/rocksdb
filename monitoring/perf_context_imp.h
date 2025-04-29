@@ -41,6 +41,8 @@ extern thread_local PerfContext perf_context;
 #define PERF_TIMER_START(metric) perf_step_timer_##metric.Start();
 
 // Declare and set start time of the timer
+// 定义一个 PerfStepTimer 计时器并记录当前开始时间
+// 最后的ns耗时通过metric返回
 #define PERF_TIMER_GUARD(metric)                                  \
   PerfStepTimer perf_step_timer_##metric(&(perf_context.metric)); \
   perf_step_timer_##metric.Start();

@@ -20,6 +20,7 @@ namespace ROCKSDB_NAMESPACE {
 // Convenience methods
 Status DBImpl::Put(const WriteOptions& o, ColumnFamilyHandle* column_family,
                    const Slice& key, const Slice& val) {
+  // 调用基类中的 DB::Put 实现
   return DB::Put(o, column_family, key, val);
 }
 
@@ -64,6 +65,7 @@ Status DBImpl::WriteWithCallback(const WriteOptions& write_options,
 // The main write queue. This is the only write queue that updates LastSequence.
 // When using one write queue, the same sequence also indicates the last
 // published sequence.
+// 暂时关注前2个参数
 Status DBImpl::WriteImpl(const WriteOptions& write_options,
                          WriteBatch* my_batch, WriteCallback* callback,
                          uint64_t* log_used, uint64_t log_ref,
@@ -84,6 +86,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
   if (write_options.sync && write_options.disableWAL) {
     return Status::InvalidArgument("Sync writes has to enable WAL.");
   }
+  // immutable_db_options_是const成员变量，在 DBImpl 构造时就通过DBOptions初始化了
   if (two_write_queues_ && immutable_db_options_.enable_pipelined_write) {
     return Status::NotSupported(
         "pipelined_writes is not compatible with concurrent prepares");
@@ -120,6 +123,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
                             kDontPublishLastSeq, disable_memtable);
   }
 
+  // unordered_write 默认是false，options.h中的`struct DBOptions`
   if (immutable_db_options_.unordered_write) {
     const size_t sub_batch_cnt = batch_cnt != 0
                                      ? batch_cnt
@@ -152,27 +156,39 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
                               log_ref, disable_memtable, seq_used);
   }
 
+  // 定义一个 PerfStepTimer 计时器并记录当前开始时间，最后返回ns耗时
   PERF_TIMER_GUARD(write_pre_and_post_process_time);
+  // 定义负责写的处理类实例，此时w.state状态机状态：STATE_INIT
   WriteThread::Writer w(write_options, my_batch, callback, log_ref,
                         disable_memtable, batch_cnt, pre_release_callback);
 
   if (!write_options.disableWAL) {
+    // 记录滴答统计
     RecordTick(stats_, WRITE_WITH_WAL);
   }
 
+  // RAII机制来统计耗时情况，析构时处理statistics中的指标，里面还提供了直方图
   StopWatch write_sw(env_, immutable_db_options_.statistics.get(), DB_WRITE);
 
+  // 待写处理类实例加入到写线程
+  // 其中第一次会设置：`STATE_GROUP_LEADER`
   write_thread_.JoinBatchGroup(&w);
   Status status;
+  // Writer实例的状态，构造时是 `STATE_INIT`，可以先略过这些 w.state 语句块，以免时间线混乱，此时状态还是初始状态
+    // 其他状态：STATE_GROUP_LEADER、STATE_MEMTABLE_WRITER_LEADER、STATE_PARALLEL_MEMTABLE_WRITER、STATE_COMPLETED、STATE_LOCKED_WAITING
   if (w.state == WriteThread::STATE_PARALLEL_MEMTABLE_WRITER) {
     // we are a non-leader in a parallel group
 
+    // 需要写入MemTable
     if (w.ShouldWriteToMemtable()) {
       PERF_TIMER_STOP(write_pre_and_post_process_time);
+      // 不同段的耗时统计，此处统计写MemTable
       PERF_TIMER_GUARD(write_memtable_time);
 
+      // 用于批量写MemTable
       ColumnFamilyMemTablesImpl column_family_memtables(
           versions_->GetColumnFamilySet());
+      // 批量写数据
       w.status = WriteBatchInternal::InsertInto(
           &w, w.sequence, &column_family_memtables, &flush_scheduler_,
           &trim_history_scheduler_,
@@ -183,19 +199,23 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
       PERF_TIMER_START(write_pre_and_post_process_time);
     }
 
+    // 并发写
     if (write_thread_.CompleteParallelMemTableWriter(&w)) {
       // we're responsible for exit batch group
       // TODO(myabandeh): propagate status to write_group
       auto last_sequence = w.write_group->last_sequence;
       versions_->SetLastSequence(last_sequence);
       MemTableInsertStatusCheck(w.status);
+      // 更新w.state `STATE_COMPLETED`
       write_thread_.ExitAsBatchGroupFollower(&w);
     }
+    // 此处写完了
     assert(w.state == WriteThread::STATE_COMPLETED);
     // STATE_COMPLETED conditional below handles exit
 
     status = w.FinalStatus();
   }
+  // 写完的话return返回
   if (w.state == WriteThread::STATE_COMPLETED) {
     if (log_used != nullptr) {
       *log_used = w.log_used;
@@ -209,6 +229,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     return w.FinalStatus();
   }
   // else we are the leader of the write batch group
+  // 上面第一次JoinBatchGroup里，会设置 `STATE_GROUP_LEADER`
   assert(w.state == WriteThread::STATE_GROUP_LEADER);
 
   // Once reaches this point, the current writer "w" will try to do its write
@@ -232,6 +253,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     // PreprocessWrite does its own perf timing.
     PERF_TIMER_STOP(write_pre_and_post_process_time);
 
+    // 写前预处理，是否需要切WAL、切MemTable、flush数据到磁盘
     status = PreprocessWrite(write_options, &need_log_sync, &write_context);
     if (!two_write_queues_) {
       // Assign it after ::PreprocessWrite since the sequence might advance
@@ -241,6 +263,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
 
     PERF_TIMER_START(write_pre_and_post_process_time);
   }
+  // 获取WAL写日志实例
   log::Writer* log_writer = logs_.back().writer;
 
   mutex_.Unlock();
@@ -327,6 +350,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     if (!two_write_queues_) {
       if (status.ok() && !write_options.disableWAL) {
         PERF_TIMER_GUARD(write_wal_time);
+        // 写WAL
         io_s = WriteToWAL(write_group, log_writer, log_used, need_log_sync,
                           need_log_dir_sync, last_sequence + 1);
       }
@@ -335,6 +359,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
         PERF_TIMER_GUARD(write_wal_time);
         // LastAllocatedSequence is increased inside WriteToWAL under
         // wal_write_mutex_ to ensure ordered events in WAL
+        // 并发写WAL
         io_s = ConcurrentWriteToWAL(write_group, log_used, &last_sequence,
                                     seq_inc);
       } else {
@@ -381,6 +406,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     if (status.ok()) {
       PERF_TIMER_GUARD(write_memtable_time);
 
+      // 写MemTable
       if (!parallel) {
         // w.sequence will be set inside InsertInto
         w.status = WriteBatchInternal::InsertInto(
@@ -391,6 +417,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
             batch_per_txn_);
       } else {
         write_group.last_sequence = last_sequence;
+        // 设置w.state `STATE_PARALLEL_MEMTABLE_WRITER`
         write_thread_.LaunchParallelMemTableWriters(&write_group);
         in_parallel_group = true;
 
@@ -917,6 +944,7 @@ Status DBImpl::PreprocessWrite(const WriteOptions& write_options,
   if (UNLIKELY(status.ok() && !single_column_family_mode_ &&
                total_log_size_ > GetMaxTotalWalSize())) {
     WaitForPendingWrites();
+    // 切换WAL
     status = SwitchWAL(write_context);
   }
 
@@ -1624,6 +1652,7 @@ Status DBImpl::ScheduleFlushes(WriteContext* context) {
 
   for (auto& cfd : cfds) {
     if (!cfd->mem()->IsEmpty()) {
+      // 切换MemTable
       status = SwitchMemtable(cfd, context);
     }
     if (cfd->UnrefAndTryDelete()) {
@@ -1645,6 +1674,7 @@ Status DBImpl::ScheduleFlushes(WriteContext* context) {
     FlushRequest flush_req;
     GenerateFlushRequest(cfds, &flush_req);
     SchedulePendingFlush(flush_req, FlushReason::kWriteBufferFull);
+    // 判断是否需处理 刷盘 或者 Compaction
     MaybeScheduleFlushOrCompaction();
   }
   return status;
@@ -1863,17 +1893,21 @@ size_t DBImpl::GetWalPreallocateBlockSize(uint64_t write_buffer_size) const {
 
 // Default implementations of convenience methods that subclasses of DB
 // can call if they wish
+// 具体key-value写实现，最后调用`Write`函数，其中支持批量写。
 Status DB::Put(const WriteOptions& opt, ColumnFamilyHandle* column_family,
                const Slice& key, const Slice& value) {
+  // 未设置时间戳选项
   if (nullptr == opt.timestamp) {
     // Pre-allocate size of write batch conservatively.
     // 8 bytes are taken by header, 4 bytes for count, 1 byte for type,
     // and we allocate 11 extra bytes for key length, as well as value length.
+    // 预分配WriteBatch大小，另外需要的24字节包含：8字节头 + 4字节数量 + 1字节类型 + 11字节额外数据）
     WriteBatch batch(key.size() + value.size() + 24);
     Status s = batch.Put(column_family, key, value);
     if (!s.ok()) {
       return s;
     }
+    // 基类中的Write是纯虚函数，此处调用的是实现类函数 DBImpl::Write
     return Write(opt, &batch);
   }
   const Slice* ts = opt.timestamp;

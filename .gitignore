@@ -1,5 +1,7 @@
 make_config.mk
 rocksdb.pc
+.cache
+.calltree*
 
 *.a
 *.arc

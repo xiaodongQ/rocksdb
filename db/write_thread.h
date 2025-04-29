@@ -387,6 +387,7 @@ class WriteThread {
   // Mutex and condvar for writers to block on a write stall. During a write
   // stall, writers with no_slowdown set to false will wait on this rather
   // on the writer queue
+  // 用于保护 write_stall_dummy_
   port::Mutex stall_mu_;
   port::CondVar stall_cv_;
 

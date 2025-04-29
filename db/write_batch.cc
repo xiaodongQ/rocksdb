@@ -417,10 +417,12 @@ Status ReadRecordFromWriteBatch(Slice* input, char* tag,
                                 Slice* value, Slice* blob, Slice* xid) {
   assert(key != nullptr && value != nullptr);
   *tag = (*input)[0];
+  // 读取1字节的tag，data偏移1字节、size相应减1字节
   input->remove_prefix(1);
   *column_family = 0;  // default
   switch (*tag) {
     case kTypeColumnFamilyValue:
+      // 从input读取数据，并会更新其中新的数据指针位置 以及 剩余数据大小
       if (!GetVarint32(input, column_family)) {
         return Status::Corruption("bad WriteBatch Put");
       }
@@ -555,6 +557,7 @@ Status WriteBatchInternal::Iterate(const WriteBatch* wb,
       tag = 0;
       column_family = 0;  // default
 
+      // 从input里读取记录，用于下面的写操作。后续循环操作，直到input剩余数据为空。
       s = ReadRecordFromWriteBatch(&input, &tag, &column_family, &key, &value,
                                    &blob, &xid);
       if (!s.ok()) {
@@ -571,7 +574,7 @@ Status WriteBatchInternal::Iterate(const WriteBatch* wb,
       last_was_try_again = true;
       s = Status::OK();
     }
-
+    // 根据记录类型进行分别处理
     switch (tag) {
       case kTypeColumnFamilyValue:
       case kTypeValue:
@@ -2052,6 +2055,7 @@ Status WriteBatchInternal::InsertInto(
 #ifdef NDEBUG
   (void)batch_cnt;
 #endif
+  // 到此处是一定是要写MemTable的
   assert(writer->ShouldWriteToMemtable());
   MemTableInserter inserter(
       sequence, memtables, flush_scheduler, trim_history_scheduler,
@@ -2060,6 +2064,7 @@ Status WriteBatchInternal::InsertInto(
       batch_per_txn, hint_per_batch);
   SetSequence(writer->batch, sequence);
   inserter.set_log_number_ref(writer->log_ref);
+  // 进行写入
   Status s = writer->batch->Iterate(&inserter);
   assert(!seq_per_batch || batch_cnt != 0);
   assert(!seq_per_batch || inserter.sequence() - sequence == batch_cnt);

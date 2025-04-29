@@ -144,7 +144,11 @@ class DBImpl : public DB {
   using DB::Resume;
   virtual Status Resume() override;
 
+  // using会将基类 DB 中所有名为 Put 的重载函数引入到派生类的作用域中，避免名称隐藏。这使得派生类可以直接使用基类的 Put 方法（包括没显式重载的版本）
+  // 如果基类 DB 的 Put 函数有多个重载版本（例如不同参数类型），而派生类只重写了其中一个版本，其他重载版本会被隐藏。
+  // db.h 里面，Put就有多个重载版本
   using DB::Put;
+  // 写入
   virtual Status Put(const WriteOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      const Slice& value) override;
