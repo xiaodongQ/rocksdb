@@ -1701,6 +1701,7 @@ void DBImpl::NotifyOnMemTableSealed(ColumnFamilyData* /*cfd*/,
 // REQUIRES: this thread is currently at the front of the 2nd writer queue if
 // two_write_queues_ is true (This is to simplify the reasoning.)
 Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
+  // 外部持锁
   mutex_.AssertHeld();
   WriteThread::Writer nonmem_w;
   std::unique_ptr<WritableFile> lfile;
@@ -1721,6 +1722,7 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
   if (two_write_queues_) {
     log_write_mutex_.Lock();
   }
+  // 之前有WAL则创建新的WAL日志
   bool creating_new_log = !log_empty_;
   if (two_write_queues_) {
     log_write_mutex_.Unlock();
@@ -1748,10 +1750,12 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
   int num_imm_unflushed = cfd->imm()->NumNotFlushed();
   const auto preallocate_block_size =
       GetWalPreallocateBlockSize(mutable_cf_options.write_buffer_size);
+  // 创建WAL前先解锁
   mutex_.Unlock();
   if (creating_new_log) {
     // TODO: Write buffer size passed in should be max of all CF's instead
     // of mutable_cf_options.write_buffer_size.
+    // 创建新的WAL日志
     io_s = CreateWAL(new_log_number, recycle_log_number, preallocate_block_size,
                      &new_log);
     if (s.ok()) {
@@ -1760,6 +1764,7 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
   }
   if (s.ok()) {
     SequenceNumber seq = versions_->LastSequence();
+    // 创建新的MemTable
     new_mem = cfd->ConstructNewMemtable(mutable_cf_options, seq);
     context->superversion_context.NewSuperVersion();
   }
@@ -1767,6 +1772,7 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
                  "[%s] New memtable created with log file: #%" PRIu64
                  ". Immutable memtables: %d.\n",
                  cfd->GetName().c_str(), new_log_number, num_imm_unflushed);
+  // 上述创建完新的WAL和MemTable，加锁继续后续处理
   mutex_.Lock();
   if (recycle_log_number != 0) {
     // Since renaming the file is done outside DB mutex, we need to ensure
@@ -1851,6 +1857,7 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
 
   cfd->mem()->SetNextLogNumber(logfile_number_);
   cfd->imm()->Add(cfd->mem(), &context->memtables_to_free_);
+  // 增加MemTable的引用计数
   new_mem->Ref();
   cfd->SetMemtable(new_mem);
   InstallSuperVersionAndScheduleWork(cfd, &context->superversion_context,

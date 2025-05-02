@@ -29,6 +29,7 @@ bool DBImpl::EnoughRoomForCompaction(
   // Check if we have enough room to do the compaction
   bool enough_room = true;
 #ifndef ROCKSDB_LITE
+  // 获取 std::shared_ptr<SstFileManager> 中的裸指针，SstFileManager是纯虚函数
   auto sfm = static_cast<SstFileManagerImpl*>(
       immutable_db_options_.sst_file_manager.get());
   if (sfm) {
@@ -46,6 +47,7 @@ bool DBImpl::EnoughRoomForCompaction(
   (void)inputs;
   (void)sfm_reserved_compact_space;
 #endif  // ROCKSDB_LITE
+  // 不够空间就报错返回了，取消本次compaction
   if (!enough_room) {
     // Just in case tests want to change the value of enough_room
     TEST_SYNC_POINT_CALLBACK(
@@ -2235,9 +2237,11 @@ ColumnFamilyData* DBImpl::PickCompactionFromQueue(
   autovector<ColumnFamilyData*> throttled_candidates;
   ColumnFamilyData* cfd = nullptr;
   while (!compaction_queue_.empty()) {
+    // 从 compaction deque队列里获取第一个节点数据，
     auto first_cfd = *compaction_queue_.begin();
     compaction_queue_.pop_front();
     assert(first_cfd->queued_for_compaction());
+    // 通过令牌桶算法进行限流判断，申请令牌
     if (!RequestCompactionToken(first_cfd, false, token, log_buffer)) {
       throttled_candidates.push_back(first_cfd);
       continue;
@@ -2616,16 +2620,19 @@ void DBImpl::BackgroundCallCompaction(PrepickedCompaction* prepicked_compaction,
   }
 }
 
+// 进行数据compaction合并
 Status DBImpl::BackgroundCompaction(bool* made_progress,
                                     JobContext* job_context,
                                     LogBuffer* log_buffer,
                                     PrepickedCompaction* prepicked_compaction,
                                     Env::Priority thread_pri) {
+  // 可能是手动触发的compaction
   ManualCompactionState* manual_compaction =
       prepicked_compaction == nullptr
           ? nullptr
           : prepicked_compaction->manual_compaction_state;
   *made_progress = false;
+  // 确保外部持锁
   mutex_.AssertHeld();
   TEST_SYNC_POINT("DBImpl::BackgroundCompaction:Start");
 
@@ -2732,6 +2739,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
       return Status::OK();
     }
 
+    // 从 compaction deque队列里获取一个任务
     auto cfd = PickCompactionFromQueue(&task_token, log_buffer);
     if (cfd == nullptr) {
       // Can't find any executable task from the compaction queue.
@@ -2767,9 +2775,11 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
       TEST_SYNC_POINT("DBImpl::BackgroundCompaction():AfterPickCompaction");
 
       if (c != nullptr) {
+        // 判断是否有足够的空间进行compaction
         bool enough_room = EnoughRoomForCompaction(
             cfd, *(c->inputs()), &sfm_reserved_compact_space, log_buffer);
 
+        // 空间不足，不做compaction，加回到队列里
         if (!enough_room) {
           // Then don't do the compaction
           c->ReleaseCompactionFiles(status);
@@ -2778,6 +2788,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
               ->storage_info()
               ->ComputeCompactionScore(*(c->immutable_cf_options()),
                                        *(c->mutable_cf_options()));
+          // 加回到队列里
           AddToCompactionQueue(cfd);
           ++unscheduled_compactions_;
 
@@ -2805,6 +2816,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
             // Yes, we need more compactions!
             AddToCompactionQueue(cfd);
             ++unscheduled_compactions_;
+            // 就行调度判断和处理
             MaybeScheduleFlushOrCompaction();
           }
         }

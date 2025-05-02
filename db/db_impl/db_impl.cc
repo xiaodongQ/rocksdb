@@ -1836,6 +1836,7 @@ std::vector<Status> DBImpl::MultiGet(
 
   SequenceNumber consistent_seqnum;
 
+  // 定义时指定容量
   std::unordered_map<uint32_t, MultiGetColumnFamilyData> multiget_cf_data(
       column_family.size());
   for (auto cf : column_family) {
@@ -1847,6 +1848,8 @@ std::vector<Status> DBImpl::MultiGet(
     }
   }
 
+  // 定义函数，声明：`MultiGetColumnFamilyData* (std::unordered_map<uint32_t, MultiGetColumnFamilyData>::iterator&)`
+  // 功能即 通过迭代器引用返回对应的数据指针（k-v中v对应的指针）
   std::function<MultiGetColumnFamilyData*(
       std::unordered_map<uint32_t, MultiGetColumnFamilyData>::iterator&)>
       iter_deref_lambda =
@@ -1867,6 +1870,7 @@ std::vector<Status> DBImpl::MultiGet(
   // Note: this always resizes the values array
   size_t num_keys = keys.size();
   std::vector<Status> stat_list(num_keys);
+  // 只需要key对应个数
   values->resize(num_keys);
   if (timestamps) {
     timestamps->resize(num_keys);
@@ -1897,6 +1901,7 @@ std::vector<Status> DBImpl::MultiGet(
     std::string* value = &(*values)[keys_read];
     std::string* timestamp = timestamps ? &(*timestamps)[keys_read] : nullptr;
 
+    // 查询key，根据key+seqnum+时间戳查询
     LookupKey lkey(keys[keys_read], consistent_seqnum, read_options.timestamp);
     auto cfh =
         static_cast_with_check<ColumnFamilyHandleImpl>(column_family[keys_read]);
@@ -1910,12 +1915,13 @@ std::vector<Status> DBImpl::MultiGet(
          has_unpersisted_data_.load(std::memory_order_relaxed));
     bool done = false;
     if (!skip_memtable) {
+      // 不跳过memtable，则从memtable获取数据
       if (super_version->mem->Get(lkey, value, timestamp, &s, &merge_context,
                                   &max_covering_tombstone_seq, read_options,
                                   read_callback)) {
         done = true;
         RecordTick(stats_, MEMTABLE_HIT);
-      } else if (super_version->imm->Get(lkey, value, timestamp, &s,
+      } else if (super_version->imm->Get(lkey, value, timestamp, &s,  // 从immutable memtable获取
                                          &merge_context,
                                          &max_covering_tombstone_seq,
                                          read_options, read_callback)) {

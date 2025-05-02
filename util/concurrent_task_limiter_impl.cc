@@ -33,6 +33,7 @@ void ConcurrentTaskLimiterImpl::SetMaxOutstandingTask(int32_t limit) {
 }
 
 void ConcurrentTaskLimiterImpl::ResetMaxOutstandingTask() {
+  // 设置也用了宽松的内存序，因为max初始化好之后一般不会再设置（任务计数则是严格内存序）
   max_outstanding_tasks_.store(-1, std::memory_order_relaxed);
 }
 
@@ -42,11 +43,14 @@ int32_t ConcurrentTaskLimiterImpl::GetOutstandingTask() const {
 
 std::unique_ptr<TaskLimiterToken> ConcurrentTaskLimiterImpl::GetToken(
     bool force) {
+  // 最大限制任务数
   int32_t limit = max_outstanding_tasks_.load(std::memory_order_relaxed);
+  // 当前任务数
   int32_t tasks = outstanding_tasks_.load(std::memory_order_relaxed);
   // force = true, bypass the throttle.
   // limit < 0 means unlimited tasks.
   while (force || limit < 0 || tasks < limit) {
+    // 任务计数+1，默认memory_order_seq_cst
     if (outstanding_tasks_.compare_exchange_weak(tasks, tasks + 1)) {
       return std::unique_ptr<TaskLimiterToken>(new TaskLimiterToken(this));
     }
@@ -60,6 +64,9 @@ ConcurrentTaskLimiter* NewConcurrentTaskLimiter(
 }
 
 TaskLimiterToken::~TaskLimiterToken() {
+  // 析构时自动-1，不同内存序保证？
+  // C++标准，没有显式指定内存序则默认就是memory_order_seq_cst
+    // operator--对于std::atomic类型默认使用memory_order_seq_cst
   --limiter_->outstanding_tasks_;
   assert(limiter_->outstanding_tasks_ >= 0);
 }

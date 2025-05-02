@@ -46,10 +46,14 @@ class ConcurrentTaskLimiterImpl : public ConcurrentTaskLimiter {
   friend class TaskLimiterToken;
 
   std::string name_;
+  // 通过原子变量进行任务数计数
+  // 最大任务数，支持外部重置或者设置
   std::atomic<int32_t> max_outstanding_tasks_;
+  // 当前任务数
   std::atomic<int32_t> outstanding_tasks_;
 };
 
+// 限流
 class TaskLimiterToken {
  public:
   explicit TaskLimiterToken(ConcurrentTaskLimiterImpl* limiter)

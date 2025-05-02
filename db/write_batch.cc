@@ -2055,7 +2055,7 @@ Status WriteBatchInternal::InsertInto(
 #ifdef NDEBUG
   (void)batch_cnt;
 #endif
-  // 到此处是一定是要写MemTable的
+  // 到此函数表示需要写MemTable
   assert(writer->ShouldWriteToMemtable());
   MemTableInserter inserter(
       sequence, memtables, flush_scheduler, trim_history_scheduler,
